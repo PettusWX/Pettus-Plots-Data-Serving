@@ -14,7 +14,7 @@ app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-    
+
     if (req.method === 'OPTIONS') {
         res.sendStatus(200);
     } else {
@@ -37,7 +37,7 @@ const WEATHERWISE_HTTP_ENDPOINTS = [
 // Satellite configuration
 const SATELLITES = ['GOES-18', 'GOES-19'];
 const SECTORS = ['CONUS', 'M1', 'M2'];
-const BANDS = ['2', '7', '8', '9', '10', '13'];
+const BANDS = ['02', '07', '08', '09', '10', '13'];
 
 // Cache for storing latest frames
 const frameCache = new Map();
@@ -50,14 +50,14 @@ async function fetchFromWeatherwise(endpoint) {
         try {
             const url = `${baseUrl}${endpoint}`;
             console.log(`Trying to fetch from: ${url}`);
-            
+
             const response = await fetch(url, {
                 timeout: 15000,
                 headers: {
                     'User-Agent': 'PettusPlots-DataProxy/1.0'
                 }
             });
-            
+
             if (response.ok) {
                 return response;
             }
@@ -73,41 +73,41 @@ async function fetchFromWeatherwise(endpoint) {
 async function fetchLatestFrames(satellite, sector, band) {
     const cacheKey = `${satellite}-${sector}-${band}`;
     const cached = frameCache.get(cacheKey);
-    
+
     // Determine cache duration based on sector type
     const cacheDuration = (sector === 'M1' || sector === 'M2') ? M_SECTOR_CACHE_DURATION : CONUS_CACHE_DURATION;
-    
+
     // Return cached data if still valid
     if (cached && (Date.now() - cached.timestamp) < cacheDuration) {
         return cached.frames;
     }
-    
+
     try {
         const dirUrl = `/satellite/processed/${satellite}/${sector}/ABI-L1b-C${band}/dir.list`;
         console.log(`📡 Fetching directory listing: ${dirUrl}`);
-        
+
         const response = await fetchFromWeatherwise(dirUrl);
         const text = await response.text();
-        
+
         // Parse directory listing to get .wise files
         const files = text.split('\n')
             .filter(line => line.trim() && line.endsWith('.wise'))
             .map(line => line.trim())
             .sort()
             .slice(-50); // Get last 50 files
-        
+
         // Convert .wise to .plots
         const frames = files.map(file => file.replace('.wise', '.plots'));
-        
+
         // Cache the results
         frameCache.set(cacheKey, {
             frames,
             timestamp: Date.now()
         });
-        
+
         console.log(`✅ Cached ${frames.length} frames for ${satellite}/${sector}/C${band}`);
         return frames;
-        
+
     } catch (error) {
         console.error(`❌ Error fetching frames for ${satellite}/${sector}/C${band}:`, error.message);
         return [];
@@ -117,9 +117,9 @@ async function fetchLatestFrames(satellite, sector, band) {
 // Update cache for all products
 async function updateAllFrames() {
     console.log('🔄 Updating frame cache for all satellite products...');
-    
+
     const updatePromises = [];
-    
+
     for (const satellite of SATELLITES) {
         for (const sector of SECTORS) {
             for (const band of BANDS) {
@@ -127,7 +127,7 @@ async function updateAllFrames() {
             }
         }
     }
-    
+
     try {
         await Promise.all(updatePromises);
         console.log('✅ Frame cache updated successfully');
@@ -139,9 +139,9 @@ async function updateAllFrames() {
 // Update cache for M sectors (every 50 seconds)
 async function updateMSectorFrames() {
     console.log('🔄 Updating M sector frame cache...');
-    
+
     const updatePromises = [];
-    
+
     for (const satellite of SATELLITES) {
         for (const sector of ['M1', 'M2']) {
             for (const band of BANDS) {
@@ -149,7 +149,7 @@ async function updateMSectorFrames() {
             }
         }
     }
-    
+
     try {
         await Promise.all(updatePromises);
         console.log('✅ M sector frame cache updated');
@@ -161,15 +161,15 @@ async function updateMSectorFrames() {
 // Update cache for CONUS sector (every 4 minutes)
 async function updateCONUSFrames() {
     console.log('🔄 Updating CONUS frame cache...');
-    
+
     const updatePromises = [];
-    
+
     for (const satellite of SATELLITES) {
         for (const band of BANDS) {
             updatePromises.push(fetchLatestFrames(satellite, 'CONUS', band));
         }
     }
-    
+
     try {
         await Promise.all(updatePromises);
         console.log('✅ CONUS frame cache updated');
@@ -182,11 +182,11 @@ async function updateCONUSFrames() {
 function startCacheUpdates() {
     // Update immediately
     updateAllFrames();
-    
+
     // Update M sectors every 50 seconds
     setInterval(updateMSectorFrames, 50 * 1000);
     console.log('⏰ Started M sector cache updates (every 50 seconds)');
-    
+
     // Update CONUS every 4 minutes
     setInterval(updateCONUSFrames, 4 * 60 * 1000);
     console.log('⏰ Started CONUS cache updates (every 4 minutes)');
@@ -196,28 +196,28 @@ function startCacheUpdates() {
 app.get('/goes/live', async (req, res) => {
     try {
         const result = {};
-        
+
         for (const satellite of SATELLITES) {
             result[satellite] = {};
             for (const sector of SECTORS) {
                 result[satellite][sector] = {};
                 for (const band of BANDS) {
                     const frames = await fetchLatestFrames(satellite, sector, band);
-                    // Convert to full URLs with .plots extension
-                    const frameUrls = frames.map(frame => 
-                        `https://data.pettusplots.online/satellite/${satellite}/${sector}/ABI-L1b-C${band}/${frame}`
+                    // Convert to full URLs with .plots extension for direct file access
+                    const frameUrls = frames.map(frame =>
+                        `https://data.pettusplots.online/satellite/processed/${satellite}/${sector}/ABI-L1b-C${band}/${frame}`
                     );
                     result[satellite][sector][`C${band}`] = frameUrls;
                 }
             }
         }
-        
+
         res.json({
             success: true,
             timestamp: new Date().toISOString(),
             goes: result
         });
-        
+
     } catch (error) {
         console.error('Error generating GOES live API:', error);
         res.status(500).json({
@@ -232,27 +232,27 @@ app.get('/goes/live', async (req, res) => {
 app.get('/api/latest-frames', async (req, res) => {
     try {
         const result = {};
-        
+
         for (const satellite of SATELLITES) {
             result[satellite] = {};
             for (const sector of SECTORS) {
                 result[satellite][sector] = {};
                 for (const band of BANDS) {
                     const frames = await fetchLatestFrames(satellite, sector, band);
-                    const frameUrls = frames.map(frame => 
-                        `https://data.pettusplots.online/satellite/${satellite}/${sector}/ABI-L1b-C${band}/${frame}`
+                    const frameUrls = frames.map(frame =>
+                        `https://data.pettusplots.online/satellite/processed/${satellite}/${sector}/ABI-L1b-C${band}/${frame}`
                     );
                     result[satellite][sector][`C${band}`] = frameUrls;
                 }
             }
         }
-        
+
         res.json({
             success: true,
             timestamp: new Date().toISOString(),
             data: result
         });
-        
+
     } catch (error) {
         console.error('Error generating latest frames API:', error);
         res.status(500).json({
@@ -267,7 +267,7 @@ app.get('/api/latest-frames', async (req, res) => {
 app.get('/api/latest-frames/:satellite/:sector/:band', async (req, res) => {
     try {
         const { satellite, sector, band } = req.params;
-        
+
         // Validate parameters
         if (!SATELLITES.includes(satellite.toUpperCase())) {
             return res.status(400).json({
@@ -276,7 +276,7 @@ app.get('/api/latest-frames/:satellite/:sector/:band', async (req, res) => {
                 valid_satellites: SATELLITES
             });
         }
-        
+
         if (!SECTORS.includes(sector.toUpperCase())) {
             return res.status(400).json({
                 success: false,
@@ -284,7 +284,7 @@ app.get('/api/latest-frames/:satellite/:sector/:band', async (req, res) => {
                 valid_sectors: SECTORS
             });
         }
-        
+
         if (!BANDS.includes(band)) {
             return res.status(400).json({
                 success: false,
@@ -292,12 +292,12 @@ app.get('/api/latest-frames/:satellite/:sector/:band', async (req, res) => {
                 valid_bands: BANDS
             });
         }
-        
+
         const frames = await fetchLatestFrames(satellite.toUpperCase(), sector.toUpperCase(), band);
-        const frameUrls = frames.map(frame => 
-            `https://data.pettusplots.online/satellite/${satellite.toUpperCase()}/${sector.toUpperCase()}/ABI-L1b-C${band}/${frame}`
+        const frameUrls = frames.map(frame =>
+            `https://data.pettusplots.online/satellite/processed/${satellite.toUpperCase()}/${sector.toUpperCase()}/ABI-L1b-C${band}/${frame}`
         );
-        
+
         res.json({
             success: true,
             satellite: satellite.toUpperCase(),
@@ -306,7 +306,7 @@ app.get('/api/latest-frames/:satellite/:sector/:band', async (req, res) => {
             timestamp: new Date().toISOString(),
             frames: frameUrls
         });
-        
+
     } catch (error) {
         console.error(`Error fetching frames for ${req.params.satellite}/${req.params.sector}/C${req.params.band}:`, error);
         res.status(500).json({
@@ -317,64 +317,65 @@ app.get('/api/latest-frames/:satellite/:sector/:band', async (req, res) => {
     }
 });
 
-// Satellite data proxy - converts .wise to .plots
-app.get('/satellite/:satellite/:region/:channel/:filename', async (req, res) => {
+// Satellite data proxy - converts .wise to .plots (matches weatherwise structure)
+app.get('/satellite/processed/:satellite/:region/:channel/:filename', async (req, res) => {
     try {
         const { satellite, region, channel, filename } = req.params;
-        
+
         // Convert .plots extension back to .wise for weatherwise API
         const wiseFilename = filename.replace('.plots', '.wise');
         const weatherwiseEndpoint = `/satellite/processed/${satellite}/${region}/${channel}/${wiseFilename}`;
-        
+
         console.log(`Proxying satellite request: ${filename} -> ${wiseFilename}`);
-        
+
         const response = await fetchFromWeatherwise(weatherwiseEndpoint);
-        
-        // Set appropriate headers
+
+        // Set appropriate headers for file download
         res.set({
             'Content-Type': response.headers.get('content-type') || 'application/octet-stream',
             'Content-Length': response.headers.get('content-length'),
+            'Content-Disposition': `attachment; filename="${filename}"`,
             'Cache-Control': 'public, max-age=300' // 5 minutes cache
         });
-        
+
         // Stream the binary data
         response.body.pipe(res);
-        
+
     } catch (error) {
         console.error(`Error proxying satellite data: ${error.message}`);
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Failed to fetch satellite data',
-            message: error.message 
+            message: error.message
         });
     }
 });
 
 // Directory listing proxy - converts .wise to .plots in file lists
-app.get('/satellite/:satellite/:region/:channel/dir.list', async (req, res) => {
+app.get('/satellite/processed/:satellite/:region/:channel/dir.list', async (req, res) => {
     try {
         const { satellite, region, channel } = req.params;
         const weatherwiseEndpoint = `/satellite/processed/${satellite}/${region}/${channel}/dir.list`;
-        
+
         console.log(`Proxying directory listing: ${weatherwiseEndpoint}`);
-        
+
         const response = await fetchFromWeatherwise(weatherwiseEndpoint);
         const text = await response.text();
-        
+
         // Convert all .wise extensions to .plots in the directory listing
         const convertedText = text.replace(/\.wise/g, '.plots');
-        
+
         res.set({
             'Content-Type': 'text/plain',
             'Cache-Control': 'public, max-age=60' // 1 minute cache for listings
         });
-        
+
         res.send(convertedText);
-        
+
     } catch (error) {
         console.error(`Error proxying directory listing: ${error.message}`);
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Failed to fetch directory listing',
-            message: error.message 
+            message: error.message
         });
     }
 });
@@ -385,9 +386,9 @@ app.get('/health', (req, res) => {
         totalCacheEntries: frameCache.size,
         cacheKeys: Array.from(frameCache.keys())
     };
-    
-    res.json({ 
-        status: 'ok', 
+
+    res.json({
+        status: 'ok',
         service: 'PettusPlots Data Proxy',
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
@@ -407,8 +408,8 @@ app.get('/', (req, res) => {
             goesLive: '/goes/live',
             legacyAPI: '/api/latest-frames',
             specificFrames: '/api/latest-frames/:satellite/:sector/:band',
-            satellite: '/satellite/:satellite/:region/:channel/:filename',
-            satelliteList: '/satellite/:satellite/:region/:channel/dir.list',
+            satellite: '/satellite/processed/:satellite/:region/:channel/:filename',
+            satelliteList: '/satellite/processed/:satellite/:region/:channel/dir.list',
             health: '/health'
         },
         configuration: {
@@ -424,7 +425,8 @@ app.get('/', (req, res) => {
         examples: {
             goesLive: 'https://data.pettusplots.online/goes/live',
             specificFrames: 'https://data.pettusplots.online/api/latest-frames/GOES-19/CONUS/13',
-            fileProxy: 'https://data.pettusplots.online/satellite/GOES-19/CONUS/ABI-L1b-C13/example_file.plots'
+            fileProxy: 'https://data.pettusplots.online/satellite/processed/GOES-19/CONUS/ABI-L1b-C13/example_file.plots',
+            dirList: 'https://data.pettusplots.online/satellite/processed/GOES-19/CONUS/ABI-L1b-C13/dir.list'
         }
     });
 });
@@ -445,7 +447,7 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`📡 GOES Live API: https://data.pettusplots.online/goes/live`);
     console.log(`🔄 Proxying weatherwise data with .plots branding`);
     console.log(`📊 Supported: ${SATELLITES.length} satellites, ${SECTORS.length} sectors, ${BANDS.length} bands`);
-    
+
     // Start frame caching
     startCacheUpdates();
 }).on('error', (err) => {
@@ -456,7 +458,7 @@ server.listen(PORT, '0.0.0.0', () => {
 // Graceful shutdown
 process.on('SIGTERM', () => {
     console.log('🛑 Shutting down server...');
-    
+
     server.close(() => {
         console.log('✅ Server shut down gracefully');
         process.exit(0);
