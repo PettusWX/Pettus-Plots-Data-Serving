@@ -326,26 +326,43 @@ app.get('/satellite/processed/:satellite/:region/:channel/:filename', async (req
         const wiseFilename = filename.replace('.plots', '.wise');
         const weatherwiseEndpoint = `/satellite/processed/${satellite}/${region}/${channel}/${wiseFilename}`;
 
-        console.log(`Proxying satellite request: ${filename} -> ${wiseFilename}`);
+        console.log(`📁 Proxying satellite file: ${filename} -> ${wiseFilename}`);
+        console.log(`🔗 Fetching from weatherwise: ${weatherwiseEndpoint}`);
 
         const response = await fetchFromWeatherwise(weatherwiseEndpoint);
 
-        // Set appropriate headers for file download
+        if (!response.ok) {
+            console.error(`❌ Weatherwise returned ${response.status}: ${response.statusText}`);
+            return res.status(response.status).json({
+                error: 'Weatherwise request failed',
+                status: response.status,
+                statusText: response.statusText
+            });
+        }
+
+        // Get the content as buffer to ensure proper binary handling
+        const buffer = await response.buffer();
+        console.log(`💾 Retrieved ${buffer.length} bytes for ${filename}`);
+
+        // Set appropriate headers for file download with .plots extension
         res.set({
-            'Content-Type': response.headers.get('content-type') || 'application/octet-stream',
-            'Content-Length': response.headers.get('content-length'),
+            'Content-Type': 'application/octet-stream',
+            'Content-Length': buffer.length,
             'Content-Disposition': `attachment; filename="${filename}"`,
-            'Cache-Control': 'public, max-age=300' // 5 minutes cache
+            'Cache-Control': 'public, max-age=300', // 5 minutes cache
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Expose-Headers': 'Content-Length, Content-Disposition'
         });
 
-        // Stream the binary data
-        response.body.pipe(res);
+        // Send the binary data directly
+        res.send(buffer);
 
     } catch (error) {
-        console.error(`Error proxying satellite data: ${error.message}`);
+        console.error(`❌ Error proxying satellite data for ${req.params.filename}:`, error.message);
         res.status(500).json({
             error: 'Failed to fetch satellite data',
-            message: error.message
+            message: error.message,
+            filename: req.params.filename
         });
     }
 });
