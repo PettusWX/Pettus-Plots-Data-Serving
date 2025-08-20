@@ -10,15 +10,8 @@ import json
 import logging
 from contextlib import contextmanager
 import shutil
-import re
-
-# Import your GOES plotting functions (assuming they're in goes_plotter.py)
-try:
-    from goes_plotter import create_professional_band13_plot, set_custom_text
-    GOES_AVAILABLE = True
-except ImportError:
-    print("Warning: GOES plotter not available. Using mock images.")
-    GOES_AVAILABLE = False
+import matplotlib.pyplot as plt
+import numpy as np
 
 app = Flask(__name__)
 
@@ -35,6 +28,9 @@ os.makedirs(IMAGE_DIR, exist_ok=True)
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# For now, we'll use mock images until you add your GOES script
+GOES_AVAILABLE = False
 
 class ImageManager:
     def __init__(self):
@@ -131,7 +127,8 @@ class ImageManager:
             'ABI-L2-MCMIPF': 'Multichannel',
             'ABI-L2-MCMIPC': 'Multichannel',
             'ABI-L2-MCMIPM': 'Multichannel',
-            'ABI-L1b-Rad': 'Radiance'
+            'ABI-L1b-Rad': 'Radiance',
+            'MOCK': 'MockData'
         }
         product_name = product_map.get(product, product)
         
@@ -143,92 +140,65 @@ class ImageManager:
         
         return url_path
     
-    def generate_image(self, custom_text=None):
-        """Generate a new GOES satellite image"""
-        logger.info("Generating new GOES satellite image...")
-        
-        try:
-            if GOES_AVAILABLE:
-                # Set custom text if provided
-                if custom_text:
-                    set_custom_text(custom_text)
-                
-                # Generate the image using your existing function
-                saved_path = create_professional_band13_plot()
-                
-                if saved_path and os.path.exists(saved_path):
-                    # Extract metadata from your script's globals or make reasonable assumptions
-                    timestamp = datetime.now()
-                    satellite = "GOES-19"  # Primary satellite from your script
-                    sector = "F"  # Full Disk from your script
-                    product = "ABI-L2-MCMIPF"  # Multichannel from your script
-                    band = "13"  # Band 13 from your script
-                    
-                    # Generate descriptive URL
-                    url_path = self.generate_descriptive_url(timestamp, satellite, sector, product, band)
-                    
-                    # Create filename based on URL path (remove /goes/ prefix)
-                    filename = url_path.replace('/goes/', '') + '.png'
-                    new_path = os.path.join(IMAGE_DIR, filename)
-                    
-                    # Move to our managed directory with new name
-                    shutil.move(saved_path, new_path)
-                    
-                    # Get file size
-                    file_size = os.path.getsize(new_path)
-                    
-                    # Store metadata in database
-                    with self.get_db() as conn:
-                        conn.execute('''
-                            INSERT INTO images (filename, filepath, timestamp, satellite,
-                                              sector, product, band, url_path, custom_text, file_size)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (filename, new_path, timestamp, satellite, sector, product, 
-                              band, url_path, custom_text or "", file_size))
-                        conn.commit()
-                    
-                    logger.info(f"Image generated successfully: {filename}")
-                    logger.info(f"URL: https://{DOMAIN}{url_path}")
-                    
-                    # Cleanup old images if we exceed the limit
-                    self.cleanup_old_images()
-                    
-                    return new_path, url_path
-                else:
-                    logger.error("Failed to generate GOES image")
-                    return None, None
-            else:
-                # Mock image generation for testing
-                return self.generate_mock_image(custom_text)
-                
-        except Exception as e:
-            logger.error(f"Error generating image: {e}")
-            return None, None
-    
     def generate_mock_image(self, custom_text=None):
-        """Generate a mock image for testing when GOES is not available"""
-        import matplotlib.pyplot as plt
-        import numpy as np
+        """Generate a mock GOES-style image for testing"""
+        logger.info("Generating mock GOES image...")
         
-        # Create a simple mock satellite image
-        fig, ax = plt.subplots(figsize=(12, 8))
+        # Create a realistic-looking satellite image
+        fig, ax = plt.subplots(figsize=(16, 10), facecolor='white')
         
-        # Generate some random "satellite-like" data
-        data = np.random.rand(100, 100) * 255
+        # Generate realistic-looking satellite data with temperature patterns
+        np.random.seed(int(time.time()) % 1000)  # Semi-random but reproducible
         
-        im = ax.imshow(data, cmap='gray_r')
-        ax.set_title(f"Mock GOES Image - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        ax.set_xlabel("Longitude")
-        ax.set_ylabel("Latitude")
+        # Create temperature-like data (simulating infrared imagery)
+        x = np.linspace(-50, 50, 200)
+        y = np.linspace(-30, 30, 150)
+        X, Y = np.meshgrid(x, y)
         
+        # Simulate cloud patterns and temperature gradients
+        temp_data = (
+            230 +  # Base temperature
+            20 * np.sin(X/10) * np.cos(Y/8) +  # Large-scale patterns
+            15 * np.random.random((150, 200)) +  # Random variation
+            -30 * np.exp(-((X-10)**2 + (Y-5)**2)/100) +  # Cold cloud system
+            -25 * np.exp(-((X+15)**2 + (Y+10)**2)/150)   # Another cold area
+        )
+        
+        # Add some noise for realism
+        temp_data += np.random.normal(0, 3, temp_data.shape)
+        
+        # Plot with infrared-style colormap
+        im = ax.imshow(temp_data, extent=[-50, 50, -30, 30], 
+                      cmap='gray_r', vmin=180, vmax=300, aspect='auto')
+        
+        # Add map-like features
+        ax.set_xlim(-50, 50)
+        ax.set_ylim(-30, 30)
+        ax.set_xlabel('Longitude', fontsize=14)
+        ax.set_ylabel('Latitude', fontsize=14)
+        
+        # Title and timestamp
+        timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')
+        ax.set_title(f'Mock GOES-19 Band 13 (Clean IR) - {timestamp_str}', 
+                    fontsize=18, fontweight='bold', pad=20)
+        
+        # Add custom text if provided
         if custom_text:
-            ax.text(0.95, 0.95, custom_text, transform=ax.transAxes, 
-                   fontsize=14, ha='right', va='top', 
-                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+            ax.text(0.98, 0.95, custom_text, transform=ax.transAxes, 
+                   fontsize=16, ha='right', va='top', 
+                   bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.8),
+                   color='darkblue', fontweight='bold')
+        
+        # Add colorbar
+        cbar = plt.colorbar(im, ax=ax, shrink=0.8, aspect=20)
+        cbar.set_label('Brightness Temperature (K)', fontsize=12)
+        
+        # Add some grid lines for reference
+        ax.grid(True, alpha=0.3, linestyle='--')
         
         # Generate metadata
         timestamp = datetime.now()
-        satellite = "MOCK-GOES"
+        satellite = "GOES-19"
         sector = "F"
         product = "MOCK"
         band = "13"
@@ -240,7 +210,9 @@ class ImageManager:
         filename = url_path.replace('/goes/', '') + '.png'
         filepath = os.path.join(IMAGE_DIR, filename)
         
-        plt.savefig(filepath, dpi=150, bbox_inches='tight')
+        # Save with high quality
+        plt.savefig(filepath, dpi=200, bbox_inches='tight', 
+                   facecolor='white', edgecolor='none')
         plt.close(fig)
         
         # Store metadata
@@ -256,8 +228,19 @@ class ImageManager:
         
         logger.info(f"Mock image generated: {filename}")
         logger.info(f"URL: https://{DOMAIN}{url_path}")
+        
         self.cleanup_old_images()
         return filepath, url_path
+    
+    def generate_image(self, custom_text=None):
+        """Generate a new image (mock for now, GOES later)"""
+        try:
+            # For now, always generate mock images
+            # Later you can add: if GOES_AVAILABLE: create_professional_band13_plot()
+            return self.generate_mock_image(custom_text)
+        except Exception as e:
+            logger.error(f"Error generating image: {e}")
+            return None, None
     
     def cleanup_old_images(self):
         """Remove old images when we exceed MAX_IMAGES"""
@@ -362,7 +345,8 @@ def health_check():
             "goes_available": GOES_AVAILABLE,
             "total_images": len(image_manager.get_all_images()),
             "latest_image": latest['url_path'] if latest else None,
-            "domain": DOMAIN
+            "domain": DOMAIN,
+            "mode": "mock" if not GOES_AVAILABLE else "real"
         })
     except Exception as e:
         logger.error(f"Health check failed: {e}")
@@ -397,6 +381,7 @@ def list_goes_images():
             "success": True,
             "count": len(formatted_images),
             "domain": DOMAIN,
+            "mode": "mock" if not GOES_AVAILABLE else "real",
             "images": formatted_images,
             "latest": formatted_images[0] if formatted_images else None
         })
@@ -473,7 +458,8 @@ def generate_new_image():
                 "success": True,
                 "message": "Image generated successfully",
                 "url": f"https://{DOMAIN}{url_path}",
-                "path": url_path
+                "path": url_path,
+                "mode": "mock" if not GOES_AVAILABLE else "real"
             })
         else:
             return jsonify({
@@ -492,6 +478,7 @@ def root():
     return jsonify({
         "message": "GOES Satellite Data Server",
         "domain": DOMAIN,
+        "mode": "mock" if not GOES_AVAILABLE else "real",
         "endpoints": {
             "/goes": "List all GOES images",
             "/goes/<descriptive_path>": "Access specific GOES image",
@@ -499,7 +486,7 @@ def root():
         },
         "example_urls": [
             f"https://{DOMAIN}/goes",
-            f"https://{DOMAIN}/goes/GOES19_FullDisk_Band13_CleanIR_Multichannel_20231201_1430Z",
+            f"https://{DOMAIN}/goes/GOES19_FullDisk_Band13_CleanIR_MockData_20231201_1430Z",
             f"https://{DOMAIN}/health"
         ]
     })
