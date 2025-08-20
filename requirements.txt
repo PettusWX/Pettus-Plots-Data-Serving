@@ -1,0 +1,83 @@
+# File Structure for Railway Deployment
+# =====================================
+
+# 1. requirements.txt (REQUIRED for Python detection)
+Flask==2.3.3
+goes2go>=2023.8.0
+matplotlib==3.7.2
+cartopy==0.21.1
+pytz==2023.3
+numpy==1.24.3
+schedule==1.2.0
+Pillow==10.0.0
+requests==2.31.0
+xarray>=2023.8.0
+netCDF4==1.6.4
+cfgrib>=0.9.10.4
+scipy==1.11.2
+pandas>=2.0.3
+
+# 2. runtime.txt (Optional but recommended)
+python-3.11.6
+
+# 3. Procfile (Alternative to railway.json)
+web: python app.py
+
+# 4. .gitignore
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+images/
+*.db
+*.png
+.DS_Store
+
+# 5. railway.toml (Modern Railway config format)
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python app.py"
+healthcheckPath = "/health"
+healthcheckTimeout = 100
+
+[env]
+PORT = { default = "5000" }
+
+# Files you need to create:
+# ========================
+# 
+# app.py (use the server code from the previous artifact)
+# goes_plotter.py (your original GOES plotting script)
+# requirements.txt (copy from above)
+# 
+# Optional files:
+# runtime.txt
+# Procfile  
+# railway.toml
+# .gitignore
