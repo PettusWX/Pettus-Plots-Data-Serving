@@ -4,3 +4,10 @@ numpy==1.24.3
 schedule==1.2.0
 Pillow==10.0.0
 requests==2.31.0
+goes2go>=2023.8.0
+cartopy==0.21.1
+pytz==2023.3
+xarray>=2023.8.0
+netCDF4==1.6.4
+scipy==1.11.2
+pandas>=2.0.3
