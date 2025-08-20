@@ -10,8 +10,19 @@ import json
 import logging
 from contextlib import contextmanager
 import shutil
-import matplotlib.pyplot as plt
-import numpy as np
+import hashlib
+
+# Import your GOES plotting functions
+try:
+    from goes_plotter import create_professional_band13_plot, set_custom_text
+    GOES_AVAILABLE = True
+    print("✅ Real GOES plotter loaded successfully")
+except ImportError:
+    print("❌ GOES plotter not available. Using mock images.")
+    GOES_AVAILABLE = False
+    # Mock functions for fallback
+    import matplotlib.pyplot as plt
+    import numpy as np
 
 app = Flask(__name__)
 
@@ -19,7 +30,7 @@ app = Flask(__name__)
 MAX_IMAGES = 500
 IMAGE_DIR = "images"
 DB_FILE = "image_metadata.db"
-GENERATION_INTERVAL = 15  # minutes between image generations
+GENERATION_INTERVAL = 3  # 3 minutes between image generations
 DOMAIN = "data.pettusplots.com"
 
 # Ensure directories exist
@@ -29,13 +40,11 @@ os.makedirs(IMAGE_DIR, exist_ok=True)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# For now, we'll use mock images until you add your GOES script
-GOES_AVAILABLE = False
-
 class ImageManager:
     def __init__(self):
         self.init_database()
         self.cleanup_on_startup()
+        self.last_data_hash = None  # Track if data has changed
         
     def init_database(self):
         """Initialize SQLite database for image metadata"""
@@ -53,6 +62,7 @@ class ImageManager:
                     url_path TEXT UNIQUE NOT NULL,
                     custom_text TEXT,
                     file_size INTEGER,
+                    data_hash TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -106,7 +116,7 @@ class ImageManager:
     
     def generate_descriptive_url(self, timestamp, satellite, sector, product, band):
         """Generate descriptive URL path with sector, time, and product info"""
-        # Format: /goes/GOES19_FullDisk_Band13_CleanIR_20231201_1430Z
+        # Format: /api/goes/GOES19_FullDisk_Band13_CleanIR_20231201_1430Z
         
         # Clean satellite name
         sat_clean = satellite.replace('noaa-', '').replace('-', '').upper()
@@ -136,12 +146,110 @@ class ImageManager:
         band_info = f"Band{band}_CleanIR" if band == "13" else f"Band{band}"
         
         # Construct URL path
-        url_path = f"/goes/{sat_clean}_{sector_name}_{band_info}_{product_name}_{time_str}"
+        url_path = f"/api/goes/{sat_clean}_{sector_name}_{band_info}_{product_name}_{time_str}"
         
         return url_path
     
+    def calculate_data_hash(self, timestamp_str, satellite):
+        """Calculate a hash to identify unique data frames"""
+        # Round timestamp to nearest 3 minutes to group related data
+        try:
+            dt = datetime.strptime(timestamp_str, '%Y%m%d_%H%MZ')
+            # Round to nearest 3 minutes
+            minutes = (dt.minute // 3) * 3
+            rounded_dt = dt.replace(minute=minutes, second=0, microsecond=0)
+            hash_input = f"{satellite}_{rounded_dt.strftime('%Y%m%d_%H%M')}"
+            return hashlib.md5(hash_input.encode()).hexdigest()
+        except:
+            # Fallback to timestamp-based hash
+            hash_input = f"{satellite}_{timestamp_str}"
+            return hashlib.md5(hash_input.encode()).hexdigest()
+    
+    def check_if_frame_exists(self, data_hash):
+        """Check if we already have this data frame"""
+        with self.get_db() as conn:
+            result = conn.execute(
+                "SELECT COUNT(*) as count FROM images WHERE data_hash = ?", 
+                (data_hash,)
+            ).fetchone()
+            return result['count'] > 0
+    
+    def generate_real_goes_image(self, custom_text=None):
+        """Generate a real GOES image using your script"""
+        logger.info("Generating real GOES satellite image...")
+        
+        try:
+            # Set custom text if provided
+            if custom_text:
+                set_custom_text(custom_text)
+            
+            # Generate the image using your existing function
+            saved_path = create_professional_band13_plot()
+            
+            if saved_path and os.path.exists(saved_path):
+                # Extract metadata from the saved file or use current time
+                timestamp = datetime.now()
+                satellite = "GOES-19"  # Primary satellite from your script
+                sector = "F"  # Full Disk from your script
+                product = "ABI-L2-MCMIPF"  # Multichannel from your script
+                band = "13"  # Band 13 from your script
+                
+                # Calculate data hash for duplicate detection
+                time_str = timestamp.strftime('%Y%m%d_%H%MZ')
+                data_hash = self.calculate_data_hash(time_str, satellite)
+                
+                # Check if we already have this frame
+                if self.check_if_frame_exists(data_hash):
+                    logger.info(f"🔄 Frame already exists for {time_str}, skipping generation")
+                    os.remove(saved_path)  # Clean up the duplicate
+                    return None, None
+                
+                # Generate descriptive URL
+                url_path = self.generate_descriptive_url(timestamp, satellite, sector, product, band)
+                
+                # Create filename based on URL path
+                filename = url_path.replace('/api/goes/', '') + '.png'
+                new_path = os.path.join(IMAGE_DIR, filename)
+                
+                # Move to our managed directory with new name
+                shutil.move(saved_path, new_path)
+                
+                # Get file size
+                file_size = os.path.getsize(new_path)
+                
+                # Store metadata in database
+                with self.get_db() as conn:
+                    conn.execute('''
+                        INSERT INTO images (filename, filepath, timestamp, satellite,
+                                          sector, product, band, url_path, custom_text, 
+                                          file_size, data_hash)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (filename, new_path, timestamp, satellite, sector, product, 
+                          band, url_path, custom_text or "", file_size, data_hash))
+                    conn.commit()
+                
+                logger.info(f"✅ Real GOES image generated: {filename}")
+                logger.info(f"🔗 URL: https://{DOMAIN}{url_path}")
+                
+                # Update last data hash
+                self.last_data_hash = data_hash
+                
+                # Cleanup old images if we exceed the limit
+                self.cleanup_old_images()
+                
+                return new_path, url_path
+            else:
+                logger.error("❌ Failed to generate real GOES image")
+                return None, None
+                
+        except Exception as e:
+            logger.error(f"❌ Error generating real GOES image: {e}")
+            import traceback
+            traceback.print_exc()
+            return None, None
+    
     def generate_mock_image(self, custom_text=None):
-        """Generate a mock GOES-style image for testing"""
+        """Generate a mock image for testing when GOES is not available"""
         logger.info("Generating mock GOES image...")
         
         # Create a realistic-looking satellite image
@@ -198,16 +306,26 @@ class ImageManager:
         
         # Generate metadata
         timestamp = datetime.now()
-        satellite = "GOES-19"
+        satellite = "MOCK-GOES19"
         sector = "F"
         product = "MOCK"
         band = "13"
+        
+        # Calculate data hash for duplicate detection
+        time_str = timestamp.strftime('%Y%m%d_%H%MZ')
+        data_hash = self.calculate_data_hash(time_str, satellite)
+        
+        # Check if we already have this frame
+        if self.check_if_frame_exists(data_hash):
+            logger.info(f"🔄 Mock frame already exists for {time_str}, skipping generation")
+            plt.close(fig)
+            return None, None
         
         # Generate descriptive URL
         url_path = self.generate_descriptive_url(timestamp, satellite, sector, product, band)
         
         # Create filename
-        filename = url_path.replace('/goes/', '') + '.png'
+        filename = url_path.replace('/api/goes/', '') + '.png'
         filepath = os.path.join(IMAGE_DIR, filename)
         
         # Save with high quality
@@ -220,24 +338,26 @@ class ImageManager:
         with self.get_db() as conn:
             conn.execute('''
                 INSERT INTO images (filename, filepath, timestamp, satellite,
-                                  sector, product, band, url_path, custom_text, file_size)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  sector, product, band, url_path, custom_text, 
+                                  file_size, data_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (filename, filepath, timestamp, satellite, sector, product,
-                  band, url_path, custom_text or "", file_size))
+                  band, url_path, custom_text or "", file_size, data_hash))
             conn.commit()
         
-        logger.info(f"Mock image generated: {filename}")
-        logger.info(f"URL: https://{DOMAIN}{url_path}")
+        logger.info(f"✅ Mock image generated: {filename}")
+        logger.info(f"🔗 URL: https://{DOMAIN}{url_path}")
         
         self.cleanup_old_images()
         return filepath, url_path
     
     def generate_image(self, custom_text=None):
-        """Generate a new image (mock for now, GOES later)"""
+        """Generate a new image (real GOES or mock)"""
         try:
-            # For now, always generate mock images
-            # Later you can add: if GOES_AVAILABLE: create_professional_band13_plot()
-            return self.generate_mock_image(custom_text)
+            if GOES_AVAILABLE:
+                return self.generate_real_goes_image(custom_text)
+            else:
+                return self.generate_mock_image(custom_text)
         except Exception as e:
             logger.error(f"Error generating image: {e}")
             return None, None
@@ -306,29 +426,35 @@ class ImageManager:
 # Initialize the image manager
 image_manager = ImageManager()
 
-# Scheduler for automatic image generation
+# Scheduler for automatic image generation every 3 minutes
 def scheduled_image_generation():
-    """Generate images on schedule"""
-    logger.info("Scheduled image generation triggered")
+    """Generate images on schedule - every 3 minutes with duplicate prevention"""
+    logger.info("🕐 Scheduled image generation triggered (3-minute interval)")
     timestamp = datetime.now().strftime('%H:%M UTC')
     custom_text = f"Auto {timestamp}"
-    image_manager.generate_image(custom_text=custom_text)
+    
+    filepath, url_path = image_manager.generate_image(custom_text=custom_text)
+    
+    if filepath and url_path:
+        logger.info(f"✅ New image generated successfully")
+    else:
+        logger.info(f"⏭️ No new image needed (duplicate frame or error)")
 
-# Schedule automatic generation
+# Schedule automatic generation every 3 minutes
 schedule.every(GENERATION_INTERVAL).minutes.do(scheduled_image_generation)
 
 def run_scheduler():
     """Run the scheduler in a separate thread"""
     while True:
         schedule.run_pending()
-        time.sleep(60)  # Check every minute
+        time.sleep(30)  # Check every 30 seconds
 
 # Start scheduler thread
 scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
 scheduler_thread.start()
 
-# API Routes
-@app.route('/health')
+# API Routes - Updated to use /api/ prefix
+@app.route('/api/health')
 def health_check():
     """Health check endpoint"""
     try:
@@ -346,7 +472,8 @@ def health_check():
             "total_images": len(image_manager.get_all_images()),
             "latest_image": latest['url_path'] if latest else None,
             "domain": DOMAIN,
-            "mode": "mock" if not GOES_AVAILABLE else "real"
+            "mode": "real_goes" if GOES_AVAILABLE else "mock",
+            "generation_interval_minutes": GENERATION_INTERVAL
         })
     except Exception as e:
         logger.error(f"Health check failed: {e}")
@@ -356,7 +483,7 @@ def health_check():
             "timestamp": datetime.now().isoformat()
         }), 500
 
-@app.route('/goes')
+@app.route('/api/goes')
 def list_goes_images():
     """List all GOES images with their descriptive URLs"""
     try:
@@ -381,7 +508,8 @@ def list_goes_images():
             "success": True,
             "count": len(formatted_images),
             "domain": DOMAIN,
-            "mode": "mock" if not GOES_AVAILABLE else "real",
+            "mode": "real_goes" if GOES_AVAILABLE else "mock",
+            "generation_interval_minutes": GENERATION_INTERVAL,
             "images": formatted_images,
             "latest": formatted_images[0] if formatted_images else None
         })
@@ -390,12 +518,12 @@ def list_goes_images():
         logger.error(f"Error listing GOES images: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/goes/<path:image_path>')
+@app.route('/api/goes/<path:image_path>')
 def serve_goes_image(image_path):
     """Serve GOES images by their descriptive URL path"""
     try:
         # Reconstruct the full URL path
-        url_path = f"/goes/{image_path}"
+        url_path = f"/api/goes/{image_path}"
         
         # Remove .png extension if present in the URL
         if url_path.endswith('.png'):
@@ -442,7 +570,7 @@ def serve_goes_image(image_path):
         return jsonify({"success": False, "error": str(e)}), 500
 
 # Generate new image endpoint (for manual triggering)
-@app.route('/goes/generate', methods=['POST'])
+@app.route('/api/goes/generate', methods=['POST'])
 def generate_new_image():
     """Generate a new GOES image (manual trigger)"""
     try:
@@ -459,37 +587,58 @@ def generate_new_image():
                 "message": "Image generated successfully",
                 "url": f"https://{DOMAIN}{url_path}",
                 "path": url_path,
-                "mode": "mock" if not GOES_AVAILABLE else "real"
+                "mode": "real_goes" if GOES_AVAILABLE else "mock"
             })
         else:
             return jsonify({
                 "success": False,
-                "error": "Failed to generate image"
-            }), 500
+                "error": "Image already exists or generation failed (duplicate frame)",
+                "note": "Check if this time frame was already generated"
+            }), 200  # Return 200 since this is normal behavior
             
     except Exception as e:
         logger.error(f"Error generating image: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
-# Root redirect
+# Root and non-API redirects
 @app.route('/')
 def root():
-    """Root endpoint - redirect to /goes"""
+    """Root endpoint - show API info"""
     return jsonify({
         "message": "GOES Satellite Data Server",
         "domain": DOMAIN,
-        "mode": "mock" if not GOES_AVAILABLE else "real",
+        "mode": "real_goes" if GOES_AVAILABLE else "mock",
+        "generation_interval_minutes": GENERATION_INTERVAL,
         "endpoints": {
-            "/goes": "List all GOES images",
-            "/goes/<descriptive_path>": "Access specific GOES image",
-            "/health": "Health check"
+            "/api/goes": "List all GOES images",
+            "/api/goes/<descriptive_path>": "Access specific GOES image",
+            "/api/health": "Health check"
         },
         "example_urls": [
-            f"https://{DOMAIN}/goes",
-            f"https://{DOMAIN}/goes/GOES19_FullDisk_Band13_CleanIR_MockData_20231201_1430Z",
-            f"https://{DOMAIN}/health"
+            f"https://{DOMAIN}/api/goes",
+            f"https://{DOMAIN}/api/goes/GOES19_FullDisk_Band13_CleanIR_Multichannel_20250820_2130Z",
+            f"https://{DOMAIN}/api/health"
         ]
     })
+
+# Legacy redirects (redirect old URLs to new API structure)
+@app.route('/goes')
+def legacy_goes_redirect():
+    """Redirect old /goes to /api/goes"""
+    return jsonify({
+        "message": "Endpoint moved",
+        "new_url": f"https://{DOMAIN}/api/goes",
+        "note": "Please use /api/goes for the current API"
+    }), 301
+
+@app.route('/health')
+def legacy_health_redirect():
+    """Redirect old /health to /api/health"""
+    return jsonify({
+        "message": "Endpoint moved", 
+        "new_url": f"https://{DOMAIN}/api/health",
+        "note": "Please use /api/health for the current API"
+    }), 301
 
 # Error handlers
 @app.errorhandler(404)
@@ -497,7 +646,8 @@ def not_found(error):
     return jsonify({
         "success": False, 
         "error": "Endpoint not found",
-        "available_endpoints": ["/goes", "/health"]
+        "available_endpoints": ["/api/goes", "/api/health"],
+        "note": "All endpoints now use /api/ prefix"
     }), 404
 
 @app.errorhandler(500)
@@ -509,6 +659,12 @@ if __name__ == '__main__':
     if not image_manager.get_latest_image():
         logger.info("No images found, generating initial image...")
         image_manager.generate_image(custom_text="Server Started")
+    
+    logger.info(f"🚀 GOES Server starting...")
+    logger.info(f"🛰️ Mode: {'Real GOES Data' if GOES_AVAILABLE else 'Mock Data'}")
+    logger.info(f"⏱️ Generation interval: {GENERATION_INTERVAL} minutes")
+    logger.info(f"📡 Domain: {DOMAIN}")
+    logger.info(f"🔗 API Base: https://{DOMAIN}/api/")
     
     # Run the Flask app
     port = int(os.environ.get('PORT', 5000))
